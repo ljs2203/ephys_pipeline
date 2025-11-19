@@ -22,6 +22,7 @@ from generate_xml_with_channel_groups import generate_xml_with_channel_groups
 
 
 
+# for running on windows
 # catgt path (this is a fixed location)
 # catgt_path = Path(r'C:\Users\Josue Regalado\Documents\EFO_temp_code\utils\J_CatGT-win\CatGT.exe')
 # data_basepath = Path(r'C:\Users\Josue Regalado\ephys_temp_data\')
@@ -35,7 +36,10 @@ data_basepath = r'/Volumes/memoryShare/Leslie_and_Tim/data/ephys'
 days_to_analyze = [r'NPX1/11_13_25_pre',r'NPX1/11_12_25_pre', r'NPX1/11_17_25_P1']
 
 sessions_to_analyze = None # if None, all sessions from that day will be analyzed
-
+if sessions_to_analyze is None:
+    analyze_all_sessions = True
+else:
+    analyze_all_sessions = False
 run_catgt = False 
 run_kilosort = False 
 run_bombcell = True 
@@ -82,11 +86,11 @@ template_xml_path = 'sample_xml_neuroscope.xml' # path to xml template  to use f
 for day in days_to_analyze: # loop through each day
     current_day_path = Path(data_basepath, day) # path to the day
 
-    if sessions_to_analyze is None: # get all folder names from that day
+    if analyze_all_sessions: # get all folder names from that day
         sessions_to_analyze = [session for session in os.listdir(current_day_path) if os.path.isdir(Path(current_day_path, session))]
     
     for session in sessions_to_analyze: # loop through each session # NEED TO IMPLEMENT CATGT CONCAT OPTION
-        basepath = Path(current_day_path, (session + '_imec0')) # path to the session
+        basepath = Path(current_day_path, session,(session + '_imec0')) # path to the session
         print(f"Processing: {basepath}")
 
     
@@ -179,26 +183,32 @@ for day in days_to_analyze: # loop through each day
         if run_bombcell:
             print("not implemented yet")
 
-        # NOT FULLY FUNCTIONAL YET
+        # NOT FULLY TESTED YET
         if generate_xml:
             if alternative_channel_position_path is not None:
                 channel_positions = np.load(alternative_channel_position_path)
-            else:
-                channel_positions = np.load(ks_folder_save_name / Path('channel_positions.npy'))
+            else: # get channel positions from the kilosort folder 
+                channel_positions = np.load(Path(list(catgt_bin_folder.glob('kilosort*'))[0], 'channel_positions.npy'))
 
-            # find folder that has kilosort in it 
-            kilosort_folder = list(catgt_bin_folder.parent.glob('kilosort*'))[0]
+            # find which animal we are dealing with
+            if 'NPX1' in session:
+                animal_name = 'NPX1'
+                region_df = region_df_NPX1
+            elif 'NPX2' in session:
+                animal_name = 'NPX2'
+                region_df = region_df_NPX2
+            elif 'NPX3' in session:
+                animal_name = 'NPX3'
+                region_df = region_df_NPX3
 
             channel_groups, region_names = get_channel_groups_with_regions(channel_positions, region_df=region_df, x_threshold=50, y_threshold=50)
 
             generate_xml_with_channel_groups(
                 template_xml_path=template_xml_path,
-                output_xml_path='NPX1_neuroscope_with_channel_groups.xml',
+                output_xml_path=Path(str(basepath.parent), animal_name, 'neuroscope.xml')
                 channel_groups=channel_groups,
                 group_regions=region_names,
             )
         #%% inserting calling buzcode functions
         if run_buzcode:
             print("not implemented yet")
-
-        sessions_to_analyze = None # reset the sessions to analyze for the next day
