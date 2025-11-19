@@ -19,8 +19,11 @@ sys.path.append('utils')
 from SGLXMetaToCoords import MetaToCoords
 from get_channel_groups import get_channel_groups_with_regions
 from generate_xml_with_channel_groups import generate_xml_with_channel_groups
+# to parse xml files
+import xml.etree.ElementTree as ET
 
-
+# to run buzcode functions
+import matlab.engine
 
 # for running on windows
 # catgt path (this is a fixed location)
@@ -45,6 +48,11 @@ run_kilosort = False
 run_bombcell = True 
 generate_xml = True # generates an xml file for easy data loading into neuroscope and for buzcode
 run_buzcode = True 
+# these only matter if running buzcode
+generate_lfp = True
+find_ripples = True
+find_sleep_states = True
+
 
 #### THIS IS ONLY NEEDED FOR GENERATING THE XML FILE ####
 # specify x and y coordinates for at least one site per channel group. If multiple sites are present
@@ -98,7 +106,7 @@ for day in days_to_analyze: # loop through each day
         os.chdir(basepath.parent)
     
         # searching original binary and meta file
-        #original_binary_file = list(basepath.glob("*.imec0.ap.bin"))[0] # not sure this is necessary anymore
+        original_binary_file = list(basepath.glob("*.imec0.ap.bin"))[0] 
         #original_meta_file = list(basepath.glob("*.imec0.ap.meta"))[0] # not sure this is necessary anymore
         run_name = basename[:-9] # run name is the core name of folder&files, this is a lazy solution for it
 
@@ -118,9 +126,7 @@ for day in days_to_analyze: # loop through each day
                 '-prb_fld',
                 '-t_miss_ok',
                 '-ap',
-                '-lf',
                 '-apfilter=butter,12,300,9000',
-                '-lffilter=butter,12,1,600'
                 '-gblcar',
                 '-gfix=0.4,0.1,0.02',
                 '-dest='+catgt_path_save, # where to save it
@@ -205,10 +211,147 @@ for day in days_to_analyze: # loop through each day
 
             generate_xml_with_channel_groups(
                 template_xml_path=template_xml_path,
-                output_xml_path=Path(str(basepath.parent), animal_name, 'neuroscope.xml')
+                output_xml_path=Path(str(basepath.parent), animal_name, 'neuroscope.xml'),
                 channel_groups=channel_groups,
                 group_regions=region_names,
             )
-        #%% inserting calling buzcode functions
+        # NOT TESTED YET
         if run_buzcode:
-            print("not implemented yet")
+            eng = matlab.engine.start_matlab() # start matlab engine
+            eng.addpath(eng.genpath('buzcode_functions')) # add matlab functions to path
+            if generate_lfp:
+            # generate LFP at 1250Hz
+                eng.ResampleBinary(original_binary_file,basename+'_1250Hz.lfp',385,1,24) #30000 Hz to 1250 Hz
+            
+            if find_ripples:
+                # check that lfp file exists 
+                if not os.path.exists(basename+'_1250Hz.lfp'):
+                    raise FileNotFoundError(f"LFP file {basename+'_1250Hz.lfp'} does not exist")
+                # check that xml file exists (to get channel numbers)
+                xml_file_path = Path(str(basepath.parent), animal_name, 'neuroscope.xml')
+                if not os.path.exists(xml_file_path):
+                    raise FileNotFoundError(f"XML file {xml_file_path} does not exist")
+                
+                # parse XML file to extract hippocampal channels
+                tree = ET.parse(xml_file_path)
+                root = tree.getroot()
+                
+                # list of possible hippocampal region names to search for - Case sensitive!
+                hpc_region_names = ['CA1', 'CA2', 'CA3', 'DG', 'HPC', 'Hippocampus']
+                
+                # find hippocampal channels in brainRegions section
+                hpc_channels = []
+                brain_regions = root.find('brainRegions')
+                if brain_regions is not None:
+                    for region_name in hpc_region_names:
+                        hpc_element = brain_regions.find(region_name)
+                        if hpc_element is not None:
+                            channels_element = hpc_element.find('channels')
+                            if channels_element is not None and channels_element.text:
+                                # parse space-separated channel numbers
+                                hpc_channels = [int(ch) for ch in channels_element.text.split()]
+                                print(f"Found {len(hpc_channels)} hippocampal channels in region '{region_name}'")
+                                break
+                
+                if not hpc_channels:
+                    raise ValueError(f"No hippocampal channels found in XML file. Searched for regions: {hpc_region_names}")
+
+                # get best ripple channel from all hpc channels
+                ripple_channel = eng.bz_GetBestRippleChan(basename+'_1250Hz.lfp', hpc_channels)
+
+
+                # find ripples
+                ### input parameters ###
+                #       basepath       path to a single session to run findRipples on
+                #       channel      	Ripple channel to use for detection (0-indexed, a la neuroscope)
+                #      'thresholds'  thresholds for ripple beginning/end and peak, in multiples
+                #                    of the stdev (default = [2 5]); must be integer values
+                #      'durations'   min inter-ripple interval and max ripple duration, in ms
+                #                    (default = [30 100]). 
+                #      'minDuration' min ripple duration. Keeping this input nomenclature for backwards
+                #                    compatibility
+                #      'stdev'       reuse previously computed stdev
+                #      'show'        plot results (default = 'off')
+                #      'noise'       noisy unfiltered channel used to exclude ripple-
+                #                    like noise (events also present on this channel are
+                #                    discarded)
+                #      'passband'    N x 2 matrix of frequencies to filter for ripple detection 
+                #                    (default = [130 200])
+                #      'EMGThresh'   0-1 threshold of EMG to exclude noise
+                #      'saveMat'     logical (default=false) to save in buzcode format
+
+                eng.bz_FindRipples(basename+'_1250Hz.lfp', ripple_channel,
+                'thresholds', [2.5, 4], 'durations', [30, 100], 'minDuration', 10, 'noise', 282, 'passband', [100, 250],
+                'EMGThresh', 0.8, 'saveMat', True)
+
+            if find_sleep_states:
+
+                # check that lfp file exists 
+                if not os.path.exists(basename+'_1250Hz.lfp'):
+                    raise FileNotFoundError(f"LFP file {basename+'_1250Hz.lfp'} does not exist")
+                # check that xml file exists (to get channel numbers)
+                xml_file_path = Path(str(basepath.parent), animal_name, 'neuroscope.xml')
+                if not os.path.exists(xml_file_path):
+                    raise FileNotFoundError(f"XML file {xml_file_path} does not exist")
+                
+                # list of possible region names to search for - in order of preference! 
+                # HPC > CTX > TH for SW and theta channels - Case sensitive!
+                region_names = ['CA1', 'CA2', 'CA3', 'DG', 'HPC', 'Hippocampus', 
+                'CTX', 'ACC', 'PFC','Cortex', 'TH', 'AM', 'MDT', 'Thalamus']
+                
+                # find channels in brainRegions section
+                region_channels = []
+                for region_name in region_names:
+                    region_element = brain_regions.find(region_name)
+                    if region_element is not None:
+                        channels_element = region_element.find('channels')
+                        if channels_element is not None and channels_element.text:
+                            # parse space-separated channel numbers
+                            region_channels = [int(ch) for ch in channels_element.text.split()]
+
+                # find sleep states
+                ### input parameters ###
+                #    basePath        folder containing .xml and .lfp files.
+                #                    basePath and files should be of the form:
+                #                    'whateverfolder/recordingName/recordingName'
+                #    'savebool'      Default: true. Save anything.
+                #    'scoretime'     Window of time to score. Default: [0 Inf] 
+                #                    must be continous interval
+                #    'ignoretime'    Time intervals winthin scoretime to ignore 
+                #                    (for example, opto stimulation or behavior with artifacts)   
+                #    'winparms'      [FFT window , smooth window] (Default: [2 15])
+                #                    (Note: updated from [10 10] based on bimodaility optimization, 6/17/19)
+                #    'Notch60Hz'     Boolean 0 or 1.  Value of 1 will notch out the 57.5-62.5 Hz
+                #                    band, default is 0, no notch.  This can be necessary if
+                #                    electrical noise.
+                #    'NotchUnder3Hz' Boolean 0 or 1.  Value of 1 will notch out the 0-3 Hz
+                #                    band, default is 0, no notch.  This can be necessary
+                #                    due to poor grounding and low freq movement transients
+                #    'NotchHVS'      Boolean 0 or 1.  Value of 1 will notch the 4-10 and 
+                #                    12-18 Hz bands for SW detection, default is 0, no 
+                #                    notch.  This can be useful in
+                #                    recordings with prominent high voltage spindles which
+                #                    have prominent ~16hz harmonics
+                #    'NotchTheta'    Boolean 0 or 1.  Value of 1 will notch the 4-10 Hz
+                #                    band for SW detection, default is 0, no notch.  This 
+                #                    can be useful to
+                #                    transform the cortical spectrum to approximately
+                #                    hippocampal, may also be necessary with High Voltage
+                #                    Spindles
+                #    'stickytrigger' Implements a "sticky" trigger for SW/EMG threshold 
+                #                    crossings: metrics must reach halfway between threshold
+                #                    and opposite peak to count as crossing (reduces
+                #                    flickering) (default:true)
+                #    'SWChannels'    A vector list of channels that may be chosen for SW
+                #                    signal
+                #    'ThetaChannels' A vector list of channels that may be chosen for Theta
+                #                    signal
+                #    'MotionSource'  Source for the motion signal used.  'EMGfromLFP' or 
+                #                    'Accelerometer'.  Default: EMGfromLFP
+                #    'AccelerChans'  Channels devoted to motion/accelerometer.  Needed only
+                #                    if the option 'MotionSource" has the value "Accelerometer' 
+                #    'rejectChannels' A vector of channels to exclude from the analysis
+                #    'saveLFP'       (default:true) to save SleepScoreLFP.lfp.mat file
+                #    'noPrompts'     (default:false) an option to not prompt user of things
+
+                eng.SleepScoreMaster(basename, 'ThetaChannels', region_channels, 'SWChannels', region_channels)
