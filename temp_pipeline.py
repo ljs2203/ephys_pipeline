@@ -5,18 +5,20 @@
 # [ ]
 
 # import
+
+import sys, os
+sys.path.append('utils')
 from pathlib import Path
 from kilosort import run_kilosort, DEFAULT_SETTINGS
 from kilosort.io import load_probe
 from datetime import datetime
-import sys, os
+
 import numpy as np
 import pandas as pd
 import json
 # to run catgt from python
 import subprocess
-# to make the channel map
-sys.path.append('utils')
+
 from SGLXMetaToCoords import MetaToCoords
 from get_channel_groups import get_channel_groups_with_regions
 from generate_xml_with_channel_groups import generate_xml_with_channel_groups
@@ -27,16 +29,16 @@ import matlab.engine
 
 # for running on windows
 # catgt path (this is a fixed location)
-# catgt_path = Path(r'C:\Users\Josue Regalado\Documents\EFO_temp_code\utils\J_CatGT-win\CatGT.exe')
-# data_basepath = Path(r'C:\Users\Josue Regalado\ephys_temp_data\')
+catgt_path = Path(r'C:\Users\Josue Regalado\Documents\EFO_temp_code\utils\J_CatGT-win\CatGT.exe')
+data_basepath = Path(r'C:\Users\Josue Regalado\ephys_temp_data')
 
-# # [CHANGE ONLY THESE VARIABLES UP HERE]
-# days_to_analyze = ['NPX1\11_12_25_pre', 'NPX1\11_13_25_pre', '\NPX1\11_17_25_P1']
+# [CHANGE ONLY THESE VARIABLES UP HERE]
+days_to_analyze = [r'NPX3\11_14_2025']
 
 # for testing on mac
-catgt_path = Path(r'C:/Users/Josue Regalado/Documents/EFO_temp_code/utils/J_CatGT-win/CatGT.exe')
-data_basepath = r'/Volumes/memoryShare/Leslie_and_Tim/data/ephys'
-days_to_analyze = [r'NPX1/11_13_25_pre',r'NPX1/11_12_25_pre', r'NPX1/11_17_25_P1']
+# catgt_path = Path(r'C:/Users/Josue Regalado/Documents/EFO_temp_code/utils/J_CatGT-win/CatGT.exe')
+# data_basepath = r'/Volumes/memoryShare/Leslie_and_Tim/data/ephys'
+# days_to_analyze = [r'NPX1/11_13_25_pre',r'NPX1/11_12_25_pre', r'NPX1/11_17_25_P1']
 
 sessions_to_analyze = None # if None, all sessions from that day will be analyzed
 if sessions_to_analyze is None:
@@ -44,7 +46,7 @@ if sessions_to_analyze is None:
 else:
     analyze_all_sessions = False
 run_catgt = False 
-run_kilosort = False 
+spikesort = True 
 run_bombcell = True 
 generate_xml = True # generates an xml file for easy data loading into neuroscope and for buzcode
 run_buzcode = True 
@@ -87,15 +89,18 @@ region_df_NPX3 = pd.DataFrame({
 y_lim_channel_groups = 106 # allows for 5 empty sites between channel groups
 x_lim_channel_groups = 50 # 
 
-template_xml_path = 'sample_xml_neuroscope.xml' # path to xml template  to use for generating the new one
+# make it nicer so that this pathis found in project folder
+template_xml_path = r'C:\Users\Josue Regalado\ephys_pipeline\utils\sample_xml_neuroscope.xml' # path to xml template  to use for generating the new one
 #%%
 for day in days_to_analyze: # loop through each day/session
     current_day_path = Path(data_basepath, day) # path to the day
-    # create supercat folder if it doesnt exist 
-    supercat_folder = Path(current_day_path, 'supercat')
-    if not os.path.exists(supercat_folder):
-        os.mkdir(supercat_folder)
-
+    # create supercat folder if it doesnt exist (use normalcatgt folder for now...)
+    # supercat_folder = Path(current_day_path, 'supercat')
+    # if not os.path.exists(supercat_folder):
+    #     os.mkdir(supercat_folder)
+    # for testing only
+    supercat_folder = Path(r"C:\Users\Josue Regalado\ephys_temp_data\NPX3\11_14_2025\NPX3_11_13_25_offline2_CA_TH_g0\NPX3_11_13_25_offline2_CA_TH_g0_imec0_catgt")
+    
     if analyze_all_sessions: # get all folder names from that day
         sessions_to_analyze = [session for session in os.listdir(current_day_path) if os.path.isdir(Path(current_day_path, session))]
     
@@ -157,11 +162,7 @@ for day in days_to_analyze: # loop through each day/session
                 raise ValueError("CatGt failed")
             print(f"Successfully ran CatGT")
 
-        # NOT FULLY TESTED YET
         if generate_xml:
-            # check if json file exists
-            if not os.path.exists(Path(supercat_folder, '*.json')):
-                raise FileNotFoundError(f"JSON file {Path(supercat_folder, '*.json')} does not exist - run catgt first")
             # load file ending in chanmap.json in supercat folder 
             json_file_path = list(supercat_folder.glob('*chanmap.json'))[0]
             with open(json_file_path, 'r') as f:
@@ -191,7 +192,7 @@ for day in days_to_analyze: # loop through each day/session
             )
             print(f"Successfully generated XML file: {Path(supercat_folder, 'neuroscope.xml')}")
 
-        if run_kilosort:
+        if spikesort:
             
             xml_file_path = Path(supercat_folder, 'neuroscope.xml')
             region_channels = get_all_channel_groups_from_xml(xml_file_path) # returns a dict with region names associated with channels
@@ -218,7 +219,6 @@ for day in days_to_analyze: # loop through each day/session
             # FIX THIS LATER
 
             meta_file_name = catgt_meta_file
-            MetaToCoords( metaFullPath=meta_file_name, outType=5, showPlot=False) # outType 5 is for kilosort json
             # loading the probe file 
             probe_file_name = list(catgt_bin_folder.glob('*_ks_probe_chanmap.json'))[0] 
             probe_dict = load_probe(catgt_bin_folder / probe_file_name)
