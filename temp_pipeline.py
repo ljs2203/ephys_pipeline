@@ -1,5 +1,4 @@
 #%% this is the first attempt at creating a pipeline to preprocess the data and extract features
-
 # TODO list
 # [ ] write a log file for each step
 # [ ]
@@ -7,6 +6,8 @@
 # import
 
 import sys, os
+script_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(script_dir) # make sure we start out from the script directory
 sys.path.append('utils')
 from pathlib import Path
 from kilosort import run_kilosort, DEFAULT_SETTINGS
@@ -46,10 +47,12 @@ if sessions_to_analyze is None:
 else:
     analyze_all_sessions = False
 run_catgt = False 
-spikesort = True 
-run_bombcell = True 
 generate_xml = True # generates an xml file for easy data loading into neuroscope and for buzcode
-run_buzcode = True 
+spikesort = True 
+car_separately = True # if True, will CAR separately for each channel group
+sort_seperatly = True # if True, will run kilosort separately for each channel group
+run_bombcell = True 
+run_buzcode = True # generates LFP, finds sleep states and ripples, SWRs (only for HPC)
 # these only matter if running buzcode
 generate_lfp = True
 find_ripples = True
@@ -89,8 +92,8 @@ region_df_NPX3 = pd.DataFrame({
 y_lim_channel_groups = 106 # allows for 5 empty sites between channel groups
 x_lim_channel_groups = 50 # 
 
-# make it nicer so that this pathis found in project folder
-template_xml_path = r'C:\Users\Josue Regalado\ephys_pipeline\utils\sample_xml_neuroscope.xml' # path to xml template  to use for generating the new one
+# template to create new xml files
+template_xml_path = Path(script_dir, 'utils', 'sample_xml_neuroscope.xml')
 #%%
 for day in days_to_analyze: # loop through each day/session
     current_day_path = Path(data_basepath, day) # path to the day
@@ -193,12 +196,15 @@ for day in days_to_analyze: # loop through each day/session
             print(f"Successfully generated XML file: {Path(supercat_folder, 'neuroscope.xml')}")
 
         if spikesort:
+            if car_separately or sort_seperatly: # don't need channel groups if everything is run together 
+                xml_file_path = Path(supercat_folder, 'neuroscope.xml')
+                region_channels = get_all_channel_groups_from_xml(xml_file_path) # returns a dict with region names associated with channels
+                region_channels_list = list(region_channels.values()) # just need a list for kilosort
+                region_names = list(region_channels.keys())
+            else:
+                region_channels_list = None
             
-            xml_file_path = Path(supercat_folder, 'neuroscope.xml')
-            region_channels = get_all_channel_groups_from_xml(xml_file_path) # returns a dict with region names associated with channels
-            region_channels_list = list(region_channels.values()) # just need a list for kilosort
-
-            # # get the output file of catgt as the file to spike sort
+            # get the output file of catgt as the file to spike sort
             catgt_binary_file = list(catgt_bin_folder.glob("*.ap.bin"))[0]
             catgt_meta_file = list(catgt_bin_folder.glob("*.ap.meta"))[0] # not sure this is necessary anymore
 
@@ -222,14 +228,27 @@ for day in days_to_analyze: # loop through each day/session
             # loading the probe file 
             probe_file_name = list(catgt_bin_folder.glob('*_ks_probe_chanmap.json'))[0] 
             probe_dict = load_probe(catgt_bin_folder / probe_file_name)
+            if sort_seperatly:
+                for i in range(len(region_channels_list)):
+                    # exclude all channel groups except the current one 
+                    bad_channels = region_channels_list[:i] + region_channels_list[i+1:]
+                    # make sure its a 1d list 
+                    bad_channels = [item for sublist in bad_channels for item in sublist]
 
-            # setting kilosort folder name
-            date_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-            ks_folder_save_name = catgt_bin_folder / Path('kilosort4_'+date_time)
-            # running kilosort
-            ops, st, clu, tF, Wall, similar_templates, is_ref, est_contam_rate, kept_spikes = \
-                run_kilosort(settings=settings, probe=probe_dict,results_dir=ks_folder_save_name, channel_groups=region_channels_list)
-
+                    # setting kilosort folder name
+                    date_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    ks_folder_save_name = catgt_bin_folder / Path('kilosort4_'+date_time + '_' + region_names[i])
+                    # running kilosort
+                    ops, st, clu, tF, Wall, similar_templates, is_ref, est_contam_rate, kept_spikes = \
+                        run_kilosort(settings=settings, probe=probe_dict,results_dir=ks_folder_save_name, bad_channels = bad_channels)
+            else:
+                # setting kilosort folder name
+                    date_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    ks_folder_save_name = catgt_bin_folder / Path('kilosort4_'+date_time)
+                    # running kilosort
+                    ops, st, clu, tF, Wall, similar_templates, is_ref, est_contam_rate, kept_spikes = \
+                        run_kilosort(settings=settings, probe=probe_dict,results_dir=ks_folder_save_name, channel_groups=region_channels_list)
+                        
         if run_bombcell:
             print("not implemented yet")
 
