@@ -10,6 +10,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(script_dir) # make sure we start out from the script directory
 sys.path.append('utils')
 from pathlib import Path
+from purrito import CatGt_wrapper
 from kilosort import run_kilosort, DEFAULT_SETTINGS
 from kilosort.io import load_probe
 from datetime import datetime
@@ -106,7 +107,55 @@ for day in days_to_analyze: # loop through each day/session
     
     if analyze_all_sessions: # get all folder names from that day
         sessions_to_analyze = [session for session in os.listdir(current_day_path) if os.path.isdir(Path(current_day_path, session))]
-    
+
+    #%% running catgt on each session individually, then supercat to concatenate everything
+
+    # for loop, each session run
+    for i, session in enumerate(sessions_to_analyze): # loop through each recording # NEED TO IMPLEMENT CATGT CONCAT OPTION
+        basepath = Path(current_day_path, session)
+        run_name = session
+        
+        if i==0:
+        # intializing CatGt wrapper
+            catgt = CatGt_wrapper(
+                catgt_path=catgt_path, # mandatory path to CatGt executable
+                basepath=basepath, # mandatory basepath where data is located
+                run_name=run_name
+            )
+            # setting input and streams
+            catgt.set_input(prb=0, prb_fld=True) # setting input probe and probe field
+            catgt.set_streams(ap=True,ob=True,obx=0) #obx has to be set if processing onebox
+            catgt.set_options({'t_miss_ok':True,# setting other options
+                            'no_catgt_fld':True,
+                            'gfix':'0.4,0.1,0.02',
+                            'pass1_force_ni_ob_bin':True}) #pass1_force_ni_ob_bin is required to force make a tcat ob file to then concatenate everything
+        else:
+            catgt_new = catgt.clone(
+                basepath=basepath,
+                run_name=run_name
+            )
+        
+        catgt.run()
+
+        # saving the output path with fyi.txt file for supercat
+        if i==0:
+            fyi_paths = [str(basepath / (run_name + '_g0') / (run_name + '_g0_fyi.txt'))]
+        else:
+            fyi_paths.append(str(basepath / (run_name + '_g0') / (run_name + '_g0_fyi.txt')))
+    #%% running supercat to concatenate all sessions together
+    dir_runs = catgt.build_supercat_from_fyi_files(fyi_paths)
+    catgt_sc = CatGt_wrapper(catgt_path=catgt_path,basepath=basepath) # basepath here doesn't matter, it is just required
+    catgt_sc.set_streams(ap=True,ob=True,obx=0) #obx has to be set if processing onebox (required)
+    catgt_sc.set_input(prb=0, prb_fld=True) # setting input probe and probe field
+    catgt_sc.set_supercat(runs=dir_runs) 
+
+    catgt_sc.run()
+
+    #%% extra processing can be added here: e.g. extracting the TTLs from the obx.bin channels
+
+    #%% rest of the pipeline below:
+
+    # this loop might be reduced
     for session in sessions_to_analyze: # loop through each recording # NEED TO IMPLEMENT CATGT CONCAT OPTION
         basepath = Path(current_day_path, session,(session + '_imec0')) # path to the session
         print(f"Processing: {basepath}")
