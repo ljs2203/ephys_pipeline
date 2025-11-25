@@ -26,6 +26,7 @@ from get_channel_groups import get_channel_groups_with_regions
 from generate_xml_with_channel_groups import generate_xml_with_channel_groups
 from get_channel_groups_from_xml import get_all_channel_groups_from_xml
 from get_channel_groups_from_xml import get_subset_channels_from_xml
+from concat_event_times import concat_event_times
 # to run buzcode functions
 import matlab.engine
 
@@ -174,10 +175,7 @@ for day in days_to_analyze: # loop through each day/session
         #catgt_sc.set_streams(ap=True,ob=False) #obx has to be set if processing onebox (required)
         catgt_sc.set_input(prb=0, prb_fld=True) # setting input probe and probe field
         catgt_sc.set_supercat(runs=dir_runs,dest=supercat_folder)
-
         catgt_sc.run()
-
-        
 
         supercat_folder = list(supercat_folder.glob("*g0"))[0] # go into folder created in finalcat
 
@@ -193,14 +191,13 @@ for day in days_to_analyze: # loop through each day/session
         #(where analog channels have been converted to different bits in the digital channel), 6 the sync channel- which is extracted automatically)
         catgt_ob.set_extraction(xd =["1,0,5,0,0", "1,0,5,1,0","1,0,5,2,0","1,0,5,3,0"], xid =["1,0,5,4,0"] ) # puff, cue, rf, lick, cam (inverse!)
         catgt_ob.run()
-                                        
-        # also generate channelmap file for kilosort and xml file generation
-
+        # concatenate event times txt files into a single csv and remove individual txt files
+        _ = concat_event_times(supercat_folder, remove_txt_files=True)
+        # create channelmap file for kilosort and xml file generation
         catgt_meta_file = list(supercat_folder.glob('*ap.meta'))[0]
         _ = MetaToCoords(metaFullPath=Path(catgt_meta_file), destFullPath=str(supercat_folder), outType=5, showPlot=False) # outType 5 is for kilosort json
 
-        # also save recording start times in a csv 
-
+        # Save recording start times in a csv 
         with open(str(supercat_folder) + '\RecordingStartTimes.csv', 'w', newline='') as file:
             writer = csv.writer(file)
             writer.writerow(Recording_start_times)
@@ -287,7 +284,7 @@ for day in days_to_analyze: # loop through each day/session
         # loading the probe file 
         probe_file_name = list(supercat_folder.glob('*_ks_probe_chanmap.json'))[0] 
         probe_dict = load_probe(supercat_folder / probe_file_name)
-        if sort_seperatly:
+        if sort_seperatly: # run kilosort separately for each channel group
             for i in range(len(region_channels_list)):
                 # exclude all channel groups except the current one 
                 bad_channels = region_channels_list[:i] + region_channels_list[i+1:]
@@ -300,7 +297,7 @@ for day in days_to_analyze: # loop through each day/session
                 # running kilosort
                 ops, st, clu, tF, Wall, similar_templates, is_ref, est_contam_rate, kept_spikes = \
                     run_kilosort(settings=settings, probe=probe_dict,results_dir=ks_folder_save_name, bad_channels = bad_channels)
-        else:
+        else: # run kilosort on all channels together but CAR separately for each channel group
             # setting kilosort folder name
                 date_time = datetime.now().strftime("%Y%m%d_%H%M%S")
                 ks_folder_save_name = supercat_folder / Path('kilosort4_'+date_time)
