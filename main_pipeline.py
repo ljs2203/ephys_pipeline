@@ -9,6 +9,7 @@ import sys, os
 script_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(script_dir) # make sure we start out from the script directory
 sys.path.append('utils')
+sys.path.append('utils\purrito')
 from pathlib import Path
 from purrito import CatGt_wrapper
 from kilosort import run_kilosort, DEFAULT_SETTINGS
@@ -18,8 +19,6 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import json
-# to run catgt from python
-import subprocess
 
 from SGLXMetaToCoords import MetaToCoords
 from get_channel_groups import get_channel_groups_with_regions
@@ -35,25 +34,25 @@ catgt_path = Path(r'C:\Users\Josue Regalado\Documents\EFO_temp_code\utils\J_CatG
 data_basepath = Path(r'C:\Users\Josue Regalado\ephys_temp_data')
 
 # [CHANGE ONLY THESE VARIABLES UP HERE]
-days_to_analyze = [r'NPX3\11_14_2025']
+days_to_analyze = [r'NPX1\10_27_2025']
 
 # for testing on mac
 # catgt_path = Path(r'C:/Users/Josue Regalado/Documents/EFO_temp_code/utils/J_CatGT-win/CatGT.exe')
 # data_basepath = r'/Volumes/memoryShare/Leslie_and_Tim/data/ephys'
 # days_to_analyze = [r'NPX1/11_13_25_pre',r'NPX1/11_12_25_pre', r'NPX1/11_17_25_P1']
 
-sessions_to_analyze = None # if None, all sessions from that day will be analyzed
+sessions_to_analyze = None # if None, all sessions from that day will be analyzed and concatenated
 if sessions_to_analyze is None:
     analyze_all_sessions = True
 else:
     analyze_all_sessions = False
-run_catgt = False 
+run_catgt = True 
 generate_xml = True # generates an xml file for easy data loading into neuroscope and for buzcode
 spikesort = True 
 car_separately = True # if True, will CAR separately for each channel group
 sort_seperatly = True # if True, will run kilosort separately for each channel group
 run_bombcell = True 
-run_buzcode = True # generates LFP, finds sleep states and ripples, SWRs (only for HPC)
+run_buzcode = False # generates LFP, finds sleep states and ripples, SWRs (only for HPC)
 # these only matter if running buzcode
 generate_lfp = True
 find_ripples = True
@@ -76,7 +75,12 @@ region_df_NPX1 = pd.DataFrame({
     'y': [200, 3870, 200, 200, 3795, 200, 3600, 3525, 3585],
     'region': ['TH', 'ACC', 'TH', 'TH', 'ACC', 'TH', 'ACC', 'ACC', 'ACC'],
 })
-
+# below is for a NPX1 test recording (10_27_2025)
+# region_df_NPX1 = pd.DataFrame({
+#     'x': [550, 50, 300, 800, 50, 300],
+#     'y': [3600, 100, 100, 3600, 3700, 3700],
+#     'region': ['ACC', 'TH', 'TH', 'ACC', 'ACC', 'ACC'],
+# })
 region_df_NPX2 = pd.DataFrame({
     'x': [50, 300, 50, 550, 800],
     'y': [200, 3000, 2700, 3000, 3000],
@@ -102,90 +106,112 @@ for day in days_to_analyze: # loop through each day/session
     supercat_folder = Path(current_day_path, 'finalcat')
     if not os.path.exists(supercat_folder):
         os.mkdir(supercat_folder)
-    # for testing only
-    # supercat_folder = Path(r"C:\Users\Josue Regalado\ephys_temp_data\NPX3\11_14_2025\NPX3_11_13_25_offline2_CA_TH_g0\NPX3_11_13_25_offline2_CA_TH_g0_imec0_catgt")
-    
+
     if analyze_all_sessions: # get all folder names from that day
         sessions_to_analyze = [session for session in os.listdir(current_day_path) if os.path.isdir(Path(current_day_path, session))]
 
+    # exluce finalcat folder from sessions_to_analyze
+    sessions_to_analyze = np.array(sessions_to_analyze)
+    sessions_to_analyze = np.delete(sessions_to_analyze, np.where(sessions_to_analyze == 'finalcat')[0])
+    dir_runs = []
+    for_cleanup = []
     #%% running catgt on each session individually, then supercat to concatenate everything
+    if run_catgt:
+        # for loop, each session run
+        for i, session in enumerate(sessions_to_analyze): # loop through each recording 
+            run_name = session[:-3] # removes _g0
+            os.chdir(Path(current_day_path, session, session +'_imec0')) # change cwd so that the CatGT log is saved there
+            for_cleanup.append(Path(current_day_path, session, session +'_imec0'))
+            if i==0:
+            # intializing CatGt wrapper
+                catgt = CatGt_wrapper(
+                    catgt_path=catgt_path, # mandatory path to CatGt executable
+                    basepath=current_day_path, # mandatory basepath where data is located
+                    run_name=run_name
+                )
+                # setting input and streams
+                catgt.set_input(prb=0, prb_fld=True) # setting input probe and probe field
+                #catgt.set_streams(ap=True,ob=True,obx=0) #obx has to be set if processing onebox
+                catgt.set_streams(ap=True,ob=False)
+                catgt.set_options({'t_miss_ok':True,# setting other options
+                                'no_catgt_fld':True,
+                                'gfix':'0.4,0.1,0.02',
+                                'pass1_force_ni_ob_bin':False}) #pass1_force_ni_ob_bin is required to force make a tcat ob file to then concatenate everything
+                # running catgt for each session separately
+                catgt.run()
+            else:
+                catgt_new = catgt.clone(
+                    basepath=current_day_path,
+                    run_name=run_name
+                )
+                catgt_new.run()
 
-    # for loop, each session run
-    for i, session in enumerate(sessions_to_analyze): # loop through each recording # NEED TO IMPLEMENT CATGT CONCAT OPTION
-        basepath = Path(current_day_path, session)
-        run_name = session
-        
-        if i==0:
-        # intializing CatGt wrapper
-            catgt = CatGt_wrapper(
-                catgt_path=catgt_path, # mandatory path to CatGt executable
-                basepath=basepath, # mandatory basepath where data is located
-                run_name=run_name
-            )
-            # setting input and streams
-            catgt.set_input(prb=0, prb_fld=True) # setting input probe and probe field
-            catgt.set_streams(ap=True,ob=True,obx=0) #obx has to be set if processing onebox
-            catgt.set_options({'t_miss_ok':True,# setting other options
-                            'no_catgt_fld':True,
-                            'gfix':'0.4,0.1,0.02',
-                            'pass1_force_ni_ob_bin':True}) #pass1_force_ni_ob_bin is required to force make a tcat ob file to then concatenate everything
-        else:
-            catgt_new = catgt.clone(
-                basepath=basepath,
-                run_name=run_name
-            )
-        
-        # running catgt for each session separately
-        catgt.run()
+            # for supercat
+            dir_runs.append(
+            {
+            'dir': Path(current_day_path),
+            'run_ga': session
+            })
 
-        # saving the output path with fyi.txt file for supercat
-        if i==0:
-            fyi_paths = [str(basepath / (run_name + '_g0') / (run_name + '_g0_fyi.txt'))]
-        else:
-            fyi_paths.append(str(basepath / (run_name + '_g0') / (run_name + '_g0_fyi.txt')))
-    #%% running supercat to concatenate all sessions together
-    dir_runs = catgt.build_supercat_from_fyi_files(fyi_paths)
-    catgt_sc = CatGt_wrapper(catgt_path=catgt_path,basepath=basepath) # basepath here doesn't matter, it is just required
-    catgt_sc.set_streams(ap=True,ob=True,obx=0) #obx has to be set if processing onebox (required)
-    catgt_sc.set_input(prb=0, prb_fld=True) # setting input probe and probe field
-    catgt_sc.set_supercat(runs=dir_runs,dest=supercat_folder)
+        #%% running supercat to concatenate all sessions together
+        # do we need to include trim_edges = true or is it true by defaulT????
+        os.chdir(supercat_folder) # so that catgt log is saved here
+        catgt_sc = CatGt_wrapper(catgt_path=catgt_path,basepath=current_day_path) # basepath here doesn't matter, it is just required
+        #catgt_sc.set_streams(ap=True,ob=True,obx=0) #obx has to be set if processing onebox (required)
+        catgt_sc.set_streams(ap=True,ob=False) #obx has to be set if processing onebox (required)
+        catgt_sc.set_input(prb=0, prb_fld=True) # setting input probe and probe field
+        catgt_sc.set_supercat(runs=dir_runs,dest=supercat_folder)
 
-    catgt_sc.run()
+        catgt_sc.run()
 
-    #%% extra processing can be added here: e.g. extracting the TTLs from the obx.bin channels
+        #%% extra processing can be added here: e.g. extracting the TTLs from the obx.bin channels
 
-    # TODO: [ ] test extraction on obx files alone, on multiple channels
-    # NOT TESTED YET
-    run_name_finalcat = ... #this needs completion
-    catgt_ob = CatGt_wrapper(catgt_path=catgt_path,basepath=supercat_folder,run_name=run_name_finalcat) # basepath here doesn't matter, it is just required
+        # TODO: [ ] test extraction on obx files alone, on multiple channels
+        # NOT TESTED YET
+        # run_name_finalcat = ... #this needs completion
+        # catgt_ob = CatGt_wrapper(catgt_path=catgt_path,basepath=supercat_folder,run_name=run_name_finalcat) # basepath here doesn't matter, it is just required
 
-    catgt_ob.set_streams(ob=True,obx=0) #obx has to be set if processing onebox (required)
-    catgt_ob.set_options({'xd:1,0,-1,0,0'}) # for bit index 0
-    catgt_ob.run()
-    #%% rest of the pipeline below:
-
-    # this loop might be reduced
+        # catgt_ob.set_streams(ob=True,obx=0) #obx has to be set if processing onebox (required)
+        # catgt_ob.set_options({'xd:1,0,-1,0,0'}) # for bit index 0
+        # catgt_ob.run()
     
-    # also generate channelmap file for kilosort and xml file generation # CHANGE TO USE SUPERCAT FOLDER
-    MetaToCoords(metaFullPath=catgt_meta_file, destFullPath=supercat_folder, outType=5, showPlot=False) # outType 5 is for kilosort json
+        # also generate channelmap file for kilosort and xml file generation
+        supercat_folder = list(supercat_folder.glob("supercat*"))[0] # go into folder created in finalcat
+        catgt_meta_file = list(supercat_folder.glob('*ap.meta'))[0]
+        _ = MetaToCoords(metaFullPath=Path(catgt_meta_file), destFullPath=str(list(supercat_folder.glob("supercat*"))[0]), outType=5, showPlot=False) # outType 5 is for kilosort json
 
+        # remove catgt files for individual sessions after supercat
+        for s in for_cleanup:
+            temp_bin = list(s.glob("*tcat.imec0.ap.bin"))[0]
+            temp_meta = list(s.glob("*tcat.imec0.ap.meta"))[0] 
+            temp_catlog = list(s.glob("CatGT.log"))[0] 
+            temp_sync_file = list(s.glob("*.ap.xd*"))[0] 
+            os.remove(temp_bin)
+            os.remove(temp_meta)
+            os.remove(temp_catlog)
+            os.remove(temp_sync_file)
 
     if generate_xml:
-        # load file ending in chanmap.json in supercat folder 
-        json_file_path = list(supercat_folder.glob('*chanmap.json'))[0]
+        try:
+            # load file ending in chanmap.json in supercat folder 
+            json_file_path = list(supercat_folder.glob('*chanmap.json'))[0]
+        except:
+            supercat_folder = list(supercat_folder.glob("supercat*"))[0] # go into folder created in finalcat
+            # load file ending in chanmap.json in supercat folder 
+            json_file_path = list(supercat_folder.glob('*chanmap.json'))[0]
         with open(json_file_path, 'r') as f:
             temp = json.load(f)
         # extract channel positions from json file
         channel_positions = np.array([temp['xc'], temp['yc']]).T
 
         # find which animal we are dealing with
-        if 'NPX1' in session:
+        if 'NPX1' in day:
             animal_name = 'NPX1'
             region_df = region_df_NPX1
-        elif 'NPX2' in session:
+        elif 'NPX2' in day:
             animal_name = 'NPX2'
             region_df = region_df_NPX2
-        elif 'NPX3' in session:
+        elif 'NPX3' in day:
             animal_name = 'NPX3'
             region_df = region_df_NPX3
 
@@ -202,8 +228,13 @@ for day in days_to_analyze: # loop through each day/session
 
     if spikesort:
         if car_separately or sort_seperatly: # don't need channel groups if everything is run together 
-            xml_file_path = Path(supercat_folder, 'neuroscope.xml')
-            region_channels = get_all_channel_groups_from_xml(xml_file_path) # returns a dict with region names associated with channels
+            try:
+                xml_file_path = Path(supercat_folder, 'neuroscope.xml')
+                region_channels = get_all_channel_groups_from_xml(xml_file_path) # returns a dict with region names associated with channels
+            except: 
+                supercat_folder = list(supercat_folder.glob("supercat*"))[0] # go into folder created in finalcat
+                xml_file_path = Path(supercat_folder, 'neuroscope.xml')
+                region_channels = get_all_channel_groups_from_xml(xml_file_path) # returns a dict with region names associated with channels
             region_channels_list = list(region_channels.values()) # just need a list for kilosort
             region_names = list(region_channels.keys())
         else:
@@ -229,10 +260,9 @@ for day in days_to_analyze: # loop through each day/session
         # saving the probe for later use / inspection
         # FIX THIS LATER
 
-        meta_file_name = catgt_meta_file
         # loading the probe file 
-        probe_file_name = list(catgt_bin_folder.glob('*_ks_probe_chanmap.json'))[0] 
-        probe_dict = load_probe(catgt_bin_folder / probe_file_name)
+        probe_file_name = list(supercat_folder.glob('*_ks_probe_chanmap.json'))[0] 
+        probe_dict = load_probe(supercat_folder / probe_file_name)
         if sort_seperatly:
             for i in range(len(region_channels_list)):
                 # exclude all channel groups except the current one 
@@ -242,14 +272,14 @@ for day in days_to_analyze: # loop through each day/session
 
                 # setting kilosort folder name
                 date_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-                ks_folder_save_name = catgt_bin_folder / Path('kilosort4_'+date_time + '_' + region_names[i])
+                ks_folder_save_name = supercat_folder / Path('kilosort4_'+date_time + '_' + region_names[i])
                 # running kilosort
                 ops, st, clu, tF, Wall, similar_templates, is_ref, est_contam_rate, kept_spikes = \
                     run_kilosort(settings=settings, probe=probe_dict,results_dir=ks_folder_save_name, bad_channels = bad_channels)
         else:
             # setting kilosort folder name
                 date_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-                ks_folder_save_name = catgt_bin_folder / Path('kilosort4_'+date_time)
+                ks_folder_save_name = supercat_folder / Path('kilosort4_'+date_time)
                 # running kilosort
                 ops, st, clu, tF, Wall, similar_templates, is_ref, est_contam_rate, kept_spikes = \
                     run_kilosort(settings=settings, probe=probe_dict,results_dir=ks_folder_save_name, channel_groups=region_channels_list)

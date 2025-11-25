@@ -609,7 +609,7 @@ def CoordsToKSjson(meta, chans, xCoord, yCoord, connected, shankInd, shankSep, b
     
     if buildPath:
         newName = baseName +'_ks_probe_chanmap.json'
-        saveFullPath = Path(savePath / newName)
+        saveFullPath = Path(savePath, newName)
     else:
         saveFullPath = savePath
     
@@ -675,7 +675,7 @@ def MetaToCoords(metaFullPath, outType, badChan= np.zeros((0), dtype = 'int'), d
             savePath = metaFullPath.parent
             buildPath = True
         else:
-            buildPath = False
+            buildPath = True # changed to True by TE 11/24/25
             savePath = destFullPath
         outputSwitch = {
                 0: CoordsToText,
