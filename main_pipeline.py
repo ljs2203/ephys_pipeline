@@ -24,8 +24,8 @@ from SGLXMetaToCoords import MetaToCoords
 from SGLXMetaToCoords import readMeta
 from get_channel_groups import get_channel_groups_with_regions
 from generate_xml_with_channel_groups import generate_xml_with_channel_groups
-from get_channel_groups_from_xml import get_all_channel_groups_from_xml
-from get_channel_groups_from_xml import get_subset_channels_from_xml
+from get_info_from_xml import get_all_channel_groups_from_xml
+from get_info_from_xml import get_subset_channels_from_xml
 from concat_event_times import concat_event_times
 # to run buzcode functions
 import matlab.engine
@@ -217,14 +217,14 @@ for day in days_to_analyze: # loop through each day/session
             # load file ending in chanmap.json in supercat folder 
             json_file_path = list(supercat_folder.glob('*chanmap.json'))[0]
         except:
-            supercat_folder = list(supercat_folder.glob("supercat*"))[0] # go into folder created in finalcat
+            supercat_folder = list(supercat_folder.glob("*g0"))[0] # go into folder created in finalcat
             # load file ending in chanmap.json in supercat folder 
             json_file_path = list(supercat_folder.glob('*chanmap.json'))[0]
+
         with open(json_file_path, 'r') as f:
             temp = json.load(f)
         # extract channel positions from json file
         channel_positions = np.array([temp['xc'], temp['yc']]).T
-
         # find which animal we are dealing with
         if 'NPX1' in day:
             animal_name = 'NPX1'
@@ -244,6 +244,7 @@ for day in days_to_analyze: # loop through each day/session
             output_xml_path=Path(supercat_folder, 'neuroscope.xml'),
             channel_groups=channel_groups,
             group_regions=region_names,
+            channel_positions=channel_positions,
         )
         print(f"Successfully generated XML file: {Path(supercat_folder, 'neuroscope.xml')}")
 
@@ -253,7 +254,7 @@ for day in days_to_analyze: # loop through each day/session
                 xml_file_path = Path(supercat_folder, 'neuroscope.xml')
                 region_channels = get_all_channel_groups_from_xml(xml_file_path) # returns a dict with region names associated with channels
             except: 
-                supercat_folder = list(supercat_folder.glob("supercat*"))[0] # go into folder created in finalcat
+                supercat_folder = list(supercat_folder.glob("*g0"))[0] # go into folder created in finalcat
                 xml_file_path = Path(supercat_folder, 'neuroscope.xml')
                 region_channels = get_all_channel_groups_from_xml(xml_file_path) # returns a dict with region names associated with channels
             region_channels_list = list(region_channels.values()) # just need a list for kilosort
@@ -315,21 +316,35 @@ for day in days_to_analyze: # loop through each day/session
     # NOT TESTED YET
     if run_buzcode:
         eng = matlab.engine.start_matlab() # start matlab engine
-        eng.addpath(eng.genpath('buzcode_functions')) # add matlab functions to path
+        eng.addpath(eng.genpath('utils/buzcode/')) # add matlab functions to path
+        try:
+            catgt_binary_file = list(supercat_folder.glob("*.ap.bin"))[0]
+        except:
+            supercat_folder = list(supercat_folder.glob("*g0"))[0] # go into folder created in finalcat
+            catgt_binary_file = list(supercat_folder.glob("*tcat.imec0.ap.bin"))[0] # supercat bin file
+        basename = Path(supercat_folder, supercat_folder.stem[:-3]) # supercat folder + run name
         if generate_lfp:
         # generate LFP at 1250Hz
-            eng.ResampleBinary(original_binary_file,basename+'_1250Hz.lfp',385,1,24) #30000 Hz to 1250 Hz
+            eng.ResampleBinary(catgt_binary_file, basename+'_1250Hz.lfp',385,1,24, nargout=0) #30000 Hz to 1250 Hz
             print(f"Successfully generated LFP file: {basename+'_1250Hz.lfp'}")
+        # check if lfp file exists because it is needed for the rest of the functions
+
+        if not os.path.exists(basename+'_1250Hz.lfp'):
+            raise FileNotFoundError(f"LFP file {basename+'_1250Hz.lfp'} does not exist")
+        # load lfp 
+        lfp = eng.bz_GetLFP( 'all', 'basepath', str(supercat_folder), 'noPrompts', True)
+        
         if find_ripples:
-            # check that lfp file exists 
-            if not os.path.exists(basename+'_1250Hz.lfp'):
-                raise FileNotFoundError(f"LFP file {basename+'_1250Hz.lfp'} does not exist")
             # check that xml file exists (to get channel numbers)
-            xml_file_path = Path(str(basepath.parent), animal_name, 'neuroscope.xml')
+            xml_file_path = Path(supercat_folder, 'neuroscope.xml')
+            if not os.path.exists(xml_file_path):
+                raise FileNotFoundError(f"XML file {xml_file_path} does not exist")            
+
+            # get hpc channels from xml file
             hpc_channels = get_subset_channels_from_xml(xml_file_path, region='hpc')
-            # get best ripple channel from all hpc channels
-            ripple_channel = eng.bz_GetBestRippleChan(basename+'_1250Hz.lfp', hpc_channels)
-            print(f"Best ripple channel: {ripple_channel}")
+            # get best ripple channel from all hpc channels (0-indexed)
+            ripple_channel = eng.bz_GetBestRippleChan(lfp, np.array(hpc_channels) + 1, 1250.0) # +1 because matlab is stupid
+            print(f"Best ripple channel: {int(ripple_channel)}")
 
             # find ripples
             ### input parameters ###
@@ -362,14 +377,17 @@ for day in days_to_analyze: # loop through each day/session
             if not os.path.exists(basename+'_1250Hz.lfp'):
                 raise FileNotFoundError(f"LFP file {basename+'_1250Hz.lfp'} does not exist")
             # check that xml file exists (to get channel numbers)
-            xml_file_path = Path(str(basepath.parent), animal_name, 'neuroscope.xml')
+            xml_file_path = Path(supercat_folder, 'neuroscope.xml')
+            if not os.path.exists(xml_file_path):
+                raise FileNotFoundError(f"XML file {xml_file_path} does not exist")            
             hpc_channels = get_subset_channels_from_xml(xml_file_path, region='hpc')
 
-            # get best ripple channel from all hpc channels
-            ripple_channel = eng.bz_GetBestRippleChan(basename+'_1250Hz.lfp', hpc_channels)
-            print(f"Best ripple channel: {ripple_channel}")
-            print(f"Best SW channel: {best_SW_channel}")
+            ripple_channel = eng.bz_GetBestRippleChan(lfp, np.array(hpc_channels) + 1, 1250.0)
 
+            SW_channel = eng.bz_GetBestSharpWaveChan(lfp, 385, 1250.0, ripple_channel, channel_positions)
+            print(f"Best ripple channel: {int(ripple_channel)}")
+            print(f"Best SW channel: {best_SW_channel}")
+            # TESTED UNTIL HERE
             #  Channels:     an array of two channel IDs following LoadBinary format (base 1)
             #                First RIPPLE channel, and second the SHARP WAVE channel.
             #                Detection in based on these order, please be careful
@@ -433,7 +451,7 @@ for day in days_to_analyze: # loop through each day/session
             #                inspection in neuroscope).
             #  noPrompts     true/false disable any user prompts (default: true)
             # 
-            eng.bz_DetectSWR(basepath = basename, Channels = [ripple_channel, best_SW_channel], saveMat=True, EVENTFILE=True)
+            eng.bz_DetectSWR(basepath = basename, Channels = [ripple_channel, SW_channel], saveMat=True, EVENTFILE=True)
             print(f"Successfully extracted SWRs from {basename+'_1250Hz.lfp'}")
 
         if find_sleep_states:
