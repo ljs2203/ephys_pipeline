@@ -18,7 +18,11 @@ def concat_event_times(source_path, remove_txt_files=False):
     rf_times_path = list(source_path.glob("*5_2_0.txt"))[0] # rf event times
     lick_times_path = list(source_path.glob("*5_3_0.txt"))[0] # lick event times
     cam_times_path = list(source_path.glob("*5_4_0.txt"))[0] # cam event times
-    # load all txt files into a list of dfs
+    try:
+        concat_times_path = list(source_path.glob("*sc_offsets.txt"))[0] # concat times (sec)
+    except:
+        print('no concatenation times found')
+    # load all txt files into a list of dfs 
     try: 
         puff_times_df = pd.read_csv(puff_times_path, sep='\t', header=None, names=['puff_onset'])
     except: # in case there are no events (e.g. during pre exposure)
@@ -44,8 +48,25 @@ def concat_event_times(source_path, remove_txt_files=False):
     except:
         cam_times_df = pd.DataFrame([np.nan], columns=['cam_start_stop'])   
         print(f'No cam events found for session {source_path.parent.parent.name}')
+
+    try: 
+        # get concat times 
+        rows = {}
+        with open(concat_times_path, "r") as f:
+            for line in f:
+                # split at the colon
+                name, values = line.split(":")
+                # convert the rest of the line into a list of floats
+                values = values.strip().split()
+                rows[name] = [float(v) for v in values]
+        # convert rows→columns
+        concat_times_df = pd.DataFrame(rows)
+        concat_times_df = concat_times_df['sec_imap0']
+    except:
+        concat_times_df = pd.DataFrame([np.nan], columns=['sec_imap0'])  
+
     # combine all dfs into a single df
-    df = pd.concat([puff_times_df, cue_times_df, rf_times_df, lick_times_df, cam_times_df], axis = 1)
+    df = pd.concat([puff_times_df, cue_times_df, rf_times_df, lick_times_df, cam_times_df, concat_times_df], axis = 1)
     df.to_csv(source_path / 'event_times.csv', index=False)
 
     # remove txt files if desired
@@ -53,3 +74,4 @@ def concat_event_times(source_path, remove_txt_files=False):
         for file in [puff_times_path, cue_times_path, rf_times_path, lick_times_path, cam_times_path]:
             os.remove(file)
     return df
+#%%

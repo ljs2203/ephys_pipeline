@@ -19,13 +19,17 @@ import csv
 import numpy as np
 import pandas as pd
 import json
-
+import bombcell as bc
+import shutil
 from SGLXMetaToCoords import MetaToCoords
+from SGLXMetaToCoords import readMeta
 from get_channel_groups import get_channel_groups_with_regions
 from generate_xml_with_channel_groups import generate_xml_with_channel_groups
 from get_info_from_xml import get_all_channel_groups_from_xml
 from get_info_from_xml import get_subset_channels_from_xml
 from concat_event_times import concat_event_times
+
+
 # to run buzcode functions
 import matlab.engine
 
@@ -34,35 +38,23 @@ import matlab.engine
 catgt_path = Path(r'C:\Users\Josue Regalado\Documents\EFO_temp_code\utils\J_CatGT-win\CatGT.exe')
 data_basepath = Path(r'C:\Users\Josue Regalado\ephys_temp_data')
 
-# [CHANGE ONLY THESE VARIABLES UP HERE]
-days_to_analyze = [r'NPX3\11_17_25_P1']
+days_to_analyze = [ r'NPX1\11_29_25_O15',r'NPX2\11_29_25_O15',r'NPX3\11_29_25_O15']
 
-# for testing on mac
-# catgt_path = Path(r'C:/Users/Josue Regalado/Documents/EFO_temp_code/utils/J_CatGT-win/CatGT.exe')
-# data_basepath = r'/Volumes/memoryShare/Leslie_and_Tim/data/ephys'
-# days_to_analyze = [r'NPX1/11_13_25_pre',r'NPX1/11_12_25_pre', r'NPX1/11_17_25_P1']
-
-sessions_to_analyze = None # if None, all sessions from that day will be analyzed and concatenated
+sessions_to_analyze = None # if None, all sessions from that day will be included
 if sessions_to_analyze is None:
     analyze_all_sessions = True
 else:
     analyze_all_sessions = False
+
+################################ WHICH SECTIONS TO RUN #############################################
 run_catgt = True 
-generate_xml = True # generates an xml file for easy data loading into neuroscope and for buzcode
+generate_xml = False # generates an xml file for neuroscope, buzcode and for kilosort (only needed if channel groups are sorted or CAR separately)
 spikesort = True 
-car_separately = True # if True, will CAR separately for each channel group
-sort_seperatly = True # if True, will run kilosort separately for each channel group
-run_bombcell = False 
-run_buzcode = False # generates LFP, finds sleep states and ripples, SWRs (only for HPC)
-# these only matter if running buzcode
-generate_lfp = True
-find_ripples = True
-find_SWRs = True # this will use existing ripples if present, otherwise it will detect them
-best_SW_channel = 44 # IMPLEMENT AUTO DETECTION OF BEST SW CHANNEL
-find_sleep_states = True
+run_bombcell = True 
+run_buzcode = False # not fully implemented yet
+###################################################################################################
 
-
-#### THIS IS ONLY NEEDED FOR GENERATING THE XML FILE ####
+######################## OPTIONS FOR XML FILE GENERATION ##################################
 # specify x and y coordinates for at least one site per channel group. If multiple sites are present
 # in a channel group, specify coordinates that lie anywhere in the x and y ranges.
 # if only one site is present, specify the exact coordinates. List the region name associated 
@@ -100,6 +92,29 @@ x_lim_channel_groups = 50 #
 
 # template to create new xml files
 template_xml_path = Path(script_dir, 'utils', 'sample_xml_neuroscope.xml')
+
+###################################################################################################
+
+
+#################################### OPTIONS FOR SPIKESORTING #####################################
+car_separately = True # if True, will CAR separately for each channel group
+sort_seperatly = True # if True, will run kilosort separately for each channel group (and so always car separately)
+ks_ccg_threshold = 0.1 # (default: 0.25) - lower will split units more. We want to err on the side of oversplitting
+ks_highpass_cutoff = 300 # (default: 300)
+ks_batch_size = 120000 # (default: 60000) - higher might improve drift correction. if spike sorting channel groups separately, increasing this is good
+ks_th_universal = 7 # (default: 9) - lower detects more units 
+ks_th_learned = 7 # (default: 8) - lower this if few spikes are detected
+
+###################################################################################################
+
+
+#################################### OPTIONS FOR BUZCODE ##########################################
+generate_lfp = True
+find_ripples = True
+find_SWRs = True # this will use existing ripples if present, otherwise it will detect them
+best_SW_channel = 44 # IMPLEMENT AUTO DETECTION OF BEST SW CHANNEL
+find_sleep_states = True
+###################################################################################################
 #%%
 for day in days_to_analyze: # loop through each day/session
     current_day_path = Path(data_basepath, day) # path to the day
@@ -114,7 +129,7 @@ for day in days_to_analyze: # loop through each day/session
     # exluce finalcat folder from sessions_to_analyze
     sessions_to_analyze = np.array(sessions_to_analyze)
     sessions_to_analyze = np.delete(sessions_to_analyze, np.where(sessions_to_analyze == 'finalcat')[0])
-
+    sessions_to_analyze = np.delete(sessions_to_analyze, np.where(sessions_to_analyze == 'finalcat_og')[0])
     Recording_start_times = []
     # sort sessions in chronological order 
     for tmp_sess in sessions_to_analyze:
@@ -147,6 +162,7 @@ for day in days_to_analyze: # loop through each day/session
                 #catgt.set_streams(ap=True,ob=False)
                 catgt.set_options({'t_miss_ok':True,# setting other options
                                 'no_catgt_fld':True,
+                                'apfilter':'butter,12,300,9000',
                                 'gfix':'0.4,0.1,0.02',
                                 'pass1_force_ni_ob_bin':True}) #pass1_force_ni_ob_bin is required to force make a tcat ob file to then concatenate everything
                 # running catgt for each session separately
@@ -167,30 +183,79 @@ for day in days_to_analyze: # loop through each day/session
 
         #%% running supercat to concatenate all sessions together
         # do we need to include trim_edges = true or is it true by defaulT????
-        os.chdir(supercat_folder) # so that catgt log is saved here
-        print('SuperCatting...')
-        catgt_sc = CatGt_wrapper(catgt_path=catgt_path,basepath=current_day_path) # basepath here doesn't matter, it is just required
-        catgt_sc.set_streams(ap=True,ob=True,obx=0) #obx has to be set if processing onebox (required)
-        #catgt_sc.set_streams(ap=True,ob=False) #obx has to be set if processing onebox (required)
-        catgt_sc.set_input(prb=0, prb_fld=True) # setting input probe and probe field
-        catgt_sc.set_supercat(runs=dir_runs,dest=supercat_folder)
-        catgt_sc.run()
+        if len(sessions_to_analyze) >1: # there are more than 1 sessions so we concat 
 
-        #%% extra processing can be added here: e.g. extracting the TTLs from the obx.bin channels
+            os.chdir(supercat_folder) # so that catgt log is saved here
+            print('SuperCatting...')
+            catgt_sc = CatGt_wrapper(catgt_path=catgt_path,basepath=current_day_path) # basepath here doesn't matter, it is just required
+            catgt_sc.set_streams(ap=True,ob=True,obx=0) #obx has to be set if processing onebox (required)
+            #catgt_sc.set_streams(ap=True,ob=False) #obx has to be set if processing onebox (required)
+            catgt_sc.set_input(prb=0, prb_fld=True) # setting input probe and probe field
+            catgt_sc.set_supercat(runs=dir_runs,dest=supercat_folder)
 
-        # TODO: [ ] test extraction on obx files alone, on multiple channels
-        # NOT TESTED YET
-        # run_name_finalcat = ... #this needs completion
-        # catgt_ob = CatGt_wrapper(catgt_path=catgt_path,basepath=supercat_folder,run_name=run_name_finalcat) # basepath here doesn't matter, it is just required
+            catgt_sc.run()
 
-        # catgt_ob.set_streams(ob=True,obx=0) #obx has to be set if processing onebox (required)
-        # catgt_ob.set_options({'xd:1,0,-1,0,0'}) # for bit index 0
-        # catgt_ob.run()
+        else: # move items from single catgt session into supercat folder     
+            supercat_folder = Path(supercat_folder, session)
+            os.mkdir(supercat_folder) # make subfolder in finalcat folder to match structure
+            print('Single session detected - moving files to finalcat folder...')
+            os.chdir(script_dir) # make sure we are not in data folder to avoid permission conflicts when moving
+            src_folder_1 = Path(current_day_path, session) 
+            src_folder_2 = Path(current_day_path, session, session +'_imec0')
+
+            for item_name in os.listdir(src_folder_2):
+                if not 't0.imec0.ap.bin' in item_name and not 't0.imec0.ap' in item_name and not 'DS_Store' in item_name: # skip og bin and meta files
+                    source_path = os.path.join(src_folder_2, item_name)
+                    destination_path = os.path.join(supercat_folder, item_name)
+                    shutil.move(source_path, destination_path)
+
+            for item_name in os.listdir(src_folder_1):
+                if not 't0.obx0.obx.bin' in item_name and not 't0.obx0.obx.meta' in item_name and not 'DS_Store' in item_name: # skip og bin and meta obx files
+                    source_path = os.path.join(src_folder_1, item_name)
+                    destination_path = os.path.join(supercat_folder, item_name)
+                    shutil.move(source_path, destination_path)
+
+        #     shutil.move(Path(current_day_path, session), supercat_folder) # move everything into final cat folder
+
+        #     # move items from imec0 folder into parent folder
+        #     supercat_folder_tmp1 = list(supercat_folder.glob("*g0"))[0]
+        #     supercat_folder_tmp2 = list(supercat_folder_tmp1.glob("*imec0"))[0]
+        #     for item_name in os.listdir(supercat_folder_tmp2):
+        #         if not 't0.imec0.ap.bin' in item_name and not 't0.imec0.ap' in item_name: # skip og bin and meta file 
+        #             source_path = os.path.join(supercat_folder_tmp2, item_name)
+        #             destination_path = os.path.join(supercat_folder_tmp1, item_name)
+        #             shutil.move(source_path, destination_path)
+        # shutil.rmtree(supercat_folder_tmp2, ) # remove folder containing og bin and meta file 
+        # os.remove(list(supercat_folder_tmp1.glob("*t0.obx0.obx.bin"))[0]) # remove og bin and meta obx files 
+        # os.remove(list(supercat_folder_tmp1.glob("*g0_t0.obx0.obx.meta"))[0]) # remove og bin and meta obx files 
+        # supercat_folder = list(supercat_folder.glob("*g0"))[0] # go into folder created in finalcat
+
+
+        # remove 'supercat' from folder name - necessary to run catGT TTL extraction later....... 
+        if 'supercat' in supercat_folder.stem:
+            folder_old = supercat_folder
+            folder_new = Path(supercat_folder.parent, supercat_folder.stem[9:])
+            os.rename(folder_old, folder_new)
+            supercat_folder = folder_new
+
+        run_name_finalcat = supercat_folder.stem[:-3] #remove _g0
+        catgt_ob = CatGt_wrapper(catgt_path=str(catgt_path),basepath=supercat_folder.parent,run_name=run_name_finalcat, trigger='cat')
     
+        catgt_ob.set_streams(ob=True,obx=0) #obx has to be set if processing onebox (required)
+        #1,0 obx specific; 5 because we want the digital channel, then it's ttl idx, then min duration for ttl pulse
+        #(onebox always records analog even if using digital ttls. so 0-4 are the analog channels for the 5 ttl pulses, 5 is the digital channel 
+        #(where analog channels have been converted to different bits in the digital channel), 6 the sync channel- which is extracted automatically)
+        catgt_ob.set_extraction(xd=["1,0,5,0,0", "1,0,5,1,0","1,0,5,2,0","1,0,5,3,0"], xid=["1,0,5,4,0"] ) # puff, cue, rf, lick, cam (inverse!)
+        catgt_ob.run()
+        _ = concat_event_times(supercat_folder)                                
         # also generate channelmap file for kilosort and xml file generation
-        supercat_folder = list(supercat_folder.glob("supercat*"))[0] # go into folder created in finalcat
         catgt_meta_file = list(supercat_folder.glob('*ap.meta'))[0]
-        _ = MetaToCoords(metaFullPath=Path(catgt_meta_file), destFullPath=str(list(supercat_folder.glob("supercat*"))[0]), outType=5, showPlot=False) # outType 5 is for kilosort json
+        _ = MetaToCoords(metaFullPath=Path(catgt_meta_file), destFullPath=str(supercat_folder), outType=5, showPlot=False) # outType 5 is for kilosort json
+
+        # also save recording start times in a csv 
+        with open(str(supercat_folder) + '\RecordingStartTimes.csv', 'w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(Recording_start_times)
 
         # remove catgt files for individual sessions after supercat
         for s in for_cleanup:   
@@ -201,7 +266,7 @@ for day in days_to_analyze: # loop through each day/session
             os.remove(temp_bin)
             os.remove(temp_meta)
             os.remove(temp_catlog)
-            os.remove(temp_sync_file)
+            os.remove(temp_sync_file)   
         
     if generate_xml:
         try:
@@ -220,12 +285,15 @@ for day in days_to_analyze: # loop through each day/session
         if 'NPX1' in day:
             animal_name = 'NPX1'
             region_df = region_df_NPX1
+            y_lim_channel_groups = 10
         elif 'NPX2' in day:
             animal_name = 'NPX2'
             region_df = region_df_NPX2
+            y_lim_channel_groups = 106
         elif 'NPX3' in day:
             animal_name = 'NPX3'
             region_df = region_df_NPX3
+            y_lim_channel_groups = 106
 
         channel_groups, region_names = get_channel_groups_with_regions(channel_positions, region_df=region_df, 
         x_threshold=x_lim_channel_groups, y_threshold=y_lim_channel_groups)
@@ -240,69 +308,117 @@ for day in days_to_analyze: # loop through each day/session
         print(f"Successfully generated XML file: {Path(supercat_folder, 'neuroscope.xml')}")
 
     if spikesort:
-        if car_separately or sort_seperatly: # don't need channel groups if everything is run together 
-            try:
-                xml_file_path = Path(supercat_folder, 'neuroscope.xml')
-                region_channels = get_all_channel_groups_from_xml(xml_file_path) # returns a dict with region names associated with channels
-            except: 
-                supercat_folder = list(supercat_folder.glob("*g0"))[0] # go into folder created in finalcat
-                xml_file_path = Path(supercat_folder, 'neuroscope.xml')
-                region_channels = get_all_channel_groups_from_xml(xml_file_path) # returns a dict with region names associated with channels
-            region_channels_list = list(region_channels.values()) # just need a list for kilosort
-            region_names = list(region_channels.keys())
-        else:
-            region_channels_list = None
-        
-        # get the output file of catgt as the file to spike sort
-        catgt_binary_file = list(supercat_folder.glob("*.ap.bin"))[0]
-        catgt_meta_file = list(supercat_folder.glob("*.ap.meta"))[0] # not sure this is necessary anymore
+            
+            if car_separately or sort_seperatly: # don't need channel groups if everything is run together 
+                try:
+                    xml_file_path = Path(supercat_folder, 'neuroscope.xml')
+                    region_channels = get_all_channel_groups_from_xml(xml_file_path) # returns a dict with region names associated with channels
+                    catgt_meta_file = list(supercat_folder.glob('*ap.meta'))[0]
+                    _ = MetaToCoords(metaFullPath=Path(catgt_meta_file), destFullPath=str(supercat_folder), outType=5, showPlot=False) # outType 5 is for kilosort json
 
-        # Automatic kilosort settings
-        settings = DEFAULT_SETTINGS.copy()
-        # settings['data_dir'] = basepath
-        settings['filename'] = catgt_binary_file
-        settings['n_chan_bin'] = 385
+                except: 
+                    supercat_folder = list(supercat_folder.glob("*g0"))[0] # go into folder created in finalcat
+                    xml_file_path = Path(supercat_folder, 'neuroscope.xml')
+                    region_channels = get_all_channel_groups_from_xml(xml_file_path) # returns a dict with region names associated with channels
+                    catgt_meta_file = list(supercat_folder.glob('*ap.meta'))[0]
+                    _ = MetaToCoords(metaFullPath=Path(catgt_meta_file), destFullPath=str(supercat_folder), outType=5, showPlot=False) # outType 5 is for kilosort json
 
-        # (OPTIONAL) parameters to play with on kilosort. Uncomment below to change
-        # settings['ccg_threshold']=0.1 # default is 0.25 # ccg_threshold: splitting merging (should oversplit more for cleaning clusters)
-        # settings['highpass_cutoff']=500 # in Hz, default is 300 # filtering the data for spike sorting  
+                region_channels_list = list(region_channels.values()) # just need a list for kilosort
+                region_names = list(region_channels.keys())
+            else:
+                region_channels_list = None
+            
+            # get the output file of catgt as the file to spike sort
+            catgt_binary_file = list(supercat_folder.glob("*.ap.bin"))[0]
+            catgt_meta_file = list(supercat_folder.glob("*.ap.meta"))[0] # not sure this is necessary anymore
 
+            # Automatic kilosort settings
+            settings = DEFAULT_SETTINGS.copy()
+            # settings['data_dir'] = basepath
+            settings['filename'] = catgt_binary_file
+            settings['n_chan_bin'] = 385
+            settings['ccg_threshold'] = ks_ccg_threshold 
+            settings['highpass_cutoff'] = ks_highpass_cutoff 
+            settings['batch_size'] = ks_batch_size
+            settings['Th_universal'] = ks_th_universal 
+            settings['Th_learned'] = ks_th_learned
 
-        # loading (or creating) the channel map for the probe
-        # add a if statement later to check if it exists already
-        # saving the probe for later use / inspection
-        # FIX THIS LATER
+            # loading (or creating) the channel map for the probe
+            # add a if statement later to check if it exists already
+            # saving the probe for later use / inspection
+            # FIX THIS LATER
 
-        # loading the probe file 
-        probe_file_name = list(supercat_folder.glob('*_ks_probe_chanmap.json'))[0] 
-        probe_dict = load_probe(supercat_folder / probe_file_name)
-        if sort_seperatly: # run kilosort separately for each channel group
-            for i in range(len(region_channels_list)):
-                # exclude all channel groups except the current one 
-                bad_channels = region_channels_list[:i] + region_channels_list[i+1:]
-                # make sure its a 1d list 
-                bad_channels = [item for sublist in bad_channels for item in sublist]
+            # loading the probe file 
+            probe_file_name = list(supercat_folder.glob('*_ks_probe_chanmap.json'))[0] 
+            probe_dict = load_probe(supercat_folder / probe_file_name)
+            if sort_seperatly:
+                for i in range(len(region_channels_list)):
+                    # exclude all channel groups except the current one 
+                    bad_channels = region_channels_list[:i] + region_channels_list[i+1:]
+                    # make sure its a 1d list 
+                    bad_channels = [item for sublist in bad_channels for item in sublist]
 
+                    # setting kilosort folder name
+                    date_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    ks_folder_save_name = supercat_folder / Path('kilosort4_'+date_time + '_' + region_names[i])
+                    # running kilosort
+                    ops, st, clu, tF, Wall, similar_templates, is_ref, est_contam_rate, kept_spikes = \
+                        run_kilosort(settings=settings, probe=probe_dict,results_dir=ks_folder_save_name, bad_channels = bad_channels)
+            else:
                 # setting kilosort folder name
-                date_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-                ks_folder_save_name = supercat_folder / Path('kilosort4_'+date_time + '_' + region_names[i])
-                # running kilosort
-                ops, st, clu, tF, Wall, similar_templates, is_ref, est_contam_rate, kept_spikes = \
-                    run_kilosort(settings=settings, probe=probe_dict,results_dir=ks_folder_save_name, bad_channels = bad_channels)
-        else: # run kilosort on all channels together but CAR separately for each channel group
-            # setting kilosort folder name
-                date_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-                ks_folder_save_name = supercat_folder / Path('kilosort4_'+date_time)
-                # running kilosort
-                ops, st, clu, tF, Wall, similar_templates, is_ref, est_contam_rate, kept_spikes = \
-                    run_kilosort(settings=settings, probe=probe_dict,results_dir=ks_folder_save_name, channel_groups=region_channels_list)
-    
+                    date_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    ks_folder_save_name = supercat_folder / Path('kilosort4_'+date_time)
+                    # running kilosort
+                    ops, st, clu, tF, Wall, similar_templates, is_ref, est_contam_rate, kept_spikes = \
+                        run_kilosort(settings=settings, probe=probe_dict,results_dir=ks_folder_save_name, channel_groups=region_channels_list)
+        
     #%% TODO: implement TPrime after kilosort processing
 
     #%%
     if run_bombcell:
-        print("not implemented yet")
+        # Set bombcell's output directory
+        save_path = Path(ks_folder_save_name) / "bombcell"
 
+        # %%
+
+        ## Provide raw and meta files
+        ## Leave 'None' if no raw data. Ideally, your raw data is common-average-referenced and
+        # the channels are temporally aligned to each other (this can be done with CatGT)
+        #raw_file_path =  r"C:\Users\Josue Regalado\ephys_temp_data\NPX3\11_17_25_P1\finalcat_og\NPX3_11_17_25_training_CA_TH_g0\NPX3_11_17_25_training_CA_TH_g0_tcat.imec0.ap.bin" # "/home/jf5479/cup/Julie/from_Yunchang/20250411_4423_antibody_maze_C1/CatGT_out/catgt_20250411_4423_C1_g0/20250411_4423_C1_g0_imec0/20250411_4423_C1_g0_tcat.imec0.ap.bin" #None#"/home/julie/Dropbox/Example datatsets/JF093_2023-03-09_site1/site1/2023-03-09_JF093_g0_t0_bc_decompressed.imec0.ap.bin" # ks_dir
+        #meta_file_path = r"C:\Users\Josue Regalado\ephys_temp_data\NPX3\11_17_25_P1\finalcat_og\NPX3_11_17_25_training_CA_TH_g0\NPX3_11_17_25_training_CA_TH_g0_tcat.imec0.ap.meta" # "/home/jf5479/cup/Julie/from_Yunchang/20250411_4423_antibody_maze_C1/CatGT_out/catgt_20250411_4423_C1_g0/20250411_4423_C1_g0_imec0/20250411_4423_C1_g0_tcat.imec0.ap.meta" #None#"/home/julie/Dropbox/Example datatsets/JF093_2023-03-09_site1/site1/2023-03-09_JF093_g0_t0_bc_decompressed.imec0.ap.bin"None#"/home/julie/Dropbox/Example datatsets/JF093_2023-03-09_site1/site1/2023-03-09_JF093_g0_t0.imec0.ap.meta"
+        ## Get default parameters - we will see later in the notebook how to assess and fine-tune these
+        meta_file_path = None
+        raw_file_path = None
+        param = bc.get_default_parameters(ks_folder_save_name, 
+                                        raw_file=raw_file_path,
+                                        meta_file=meta_file_path,
+                                        kilosort_version=4)
+
+        # %%
+
+        param["computeDistanceMetrics"] = 0
+        param["computeDrift"] = 0
+        param["splitGoodAndMua_NonSomatic"] = 1 # splits good units into somatic and non somatic 
+        param['plotDetails'] = 0
+
+        #  3. how quality metricsa are calculated:
+        # a. how refractory period window is defined
+        param['hillOrLlobetMethod'] = True # use Llobet et al correction to calculate refractory period violations
+        param['maxRPVviolations'] = 0.3
+        param["tauR_valuesMin"]= 1 / 1000  # minumum refractory period time (s), usually 0.002 s
+        # param["tauR_valuesMax"]= 5 / 1000  # maximum refractory period time (s)
+        # param["tauR_valuesStep"]= 1 / 1000  # if tauR_valuesMin and tauR_valuesMax are different, bombcell 
+        # # will calculate refractory period violations from param["tauR_valuesMin"] to param["tauR_valuesMax"] param["tauR_valuesStep"] 
+        # bins and determine the option window for each unit before calculating the violations. 
+        # %%
+        (
+            quality_metrics,
+            param,
+            unit_type,
+            unit_type_string,
+        ) = bc.run_bombcell(
+            ks_folder_save_name, save_path, param
+        )
 
     # NOT TESTED YET
     if run_buzcode:
